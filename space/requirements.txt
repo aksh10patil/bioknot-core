@@ -1,0 +1,10 @@
+# gradio, spaces and huggingface_hub are preinstalled and platform-managed --
+# pinning them breaks the ZeroGPU runtime. torch is preinstalled too.
+#
+# Leave transformers unpinned. A `transformers<5` cap made pip backtrack to a
+# release pinning a tokenizers version with no cp312 wheel, which then tried to
+# compile from source and failed for want of a Rust compiler. v5 keeps the ESM
+# internals this app uses (encoder.layer, last_hidden_state, forward signature).
+transformers
+numpy
+requests
