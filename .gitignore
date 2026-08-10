@@ -1,11 +1,19 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.log
+.DS_Store
+
+# Model checkpoints are build artefacts, produced by `python -m training.train`
+# (and by the Docker build). Not committed.
 *.pt
 *.bin
-.DS_Store
+
+# Rust
 target/
-react/
+
+# Node / Next.js
 node_modules/
 dist/
+.next/

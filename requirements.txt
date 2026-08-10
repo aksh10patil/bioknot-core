@@ -1,6 +1,11 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch
-transformers
-gunicorn
-flask
-numpy
+
+# The +cpu local tag exists only on the PyTorch index, which guarantees we pull
+# the ~200MB CPU wheel instead of the multi-gigabyte CUDA build from PyPI.
+torch==2.5.1+cpu
+transformers==4.46.3
+numpy==1.26.4
+flask==3.0.3
+flask-cors==5.0.0
+gunicorn==23.0.0
+requests==2.32.3

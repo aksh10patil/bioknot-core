@@ -1,0 +1,19 @@
+.git
+.gitignore
+.DS_Store
+
+# Next.js dashboard is not part of the Space; it is a separate local-only app.
+web_ui/
+
+# Rust WASM crate is built out-of-band with wasm-pack, not inside this image.
+rust/
+target/
+
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# Built during the image build by training/train.py.
+bioknot_native.pt

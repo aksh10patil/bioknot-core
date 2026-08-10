@@ -1,4 +1,7 @@
 import json
+import pathlib
+
+OUT = pathlib.Path(__file__).resolve().parent / "bioknot_dataset.json"
 
 # Curated dataset mapping verified sequence motifs to topological invariants
 dataset = [
@@ -48,7 +51,7 @@ dataset = [
     }
 ]
 
-with open("bioknot_dataset.json", "w") as f:
+with open(OUT, "w") as f:
     json.dump(dataset, f, indent=2)
 
-print(f"[Dataset Generator] Created verified bioknot_dataset.json with {len(dataset)} entries.")
+print(f"[Dataset Generator] Wrote {OUT} with {len(dataset)} entries.")

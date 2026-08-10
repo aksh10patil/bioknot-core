@@ -2,12 +2,13 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 
+// Mirrors KnotAnalysisResult in rust/src/lib.rs.
 interface TopologyReport {
-  num_residues: number;
-  max_diameter: number;
-  estimated_crossing_number: number;
-  is_entangled: boolean;
-  knot_type?: string;
+  knot_type: string;
+  knot_probability: number;
+  raw_node_count: number;
+  reduced_node_count: number;
+  is_knotted: boolean;
 }
 
 interface DomainResult {
@@ -15,7 +16,7 @@ interface DomainResult {
   startResidue: number;
   endResidue: number;
   sequence: string;
-  report: TopologyReport;
+  report: TopologyReport | null;
   pdbData: string;
 }
 
@@ -39,13 +40,21 @@ export default function BioKnotDashboard() {
   useEffect(() => {
     async function loadWasm() {
       try {
-        const wasm = await import('../../public/wasm/bioknot_wasm.js');
+        // Built out-of-band; see the build command below. The path is computed so
+        // the bundler treats it as a runtime import and the app still compiles
+        // when the artefact is absent.
+        const wasmPath = '/wasm/bioknot_wasm.js';
+        const wasm = await import(/* webpackIgnore: true */ wasmPath);
         await wasm.default();
+        wasm.init_panic_hook?.();
         setWasmModule(wasm);
         setWasmReady(true);
       } catch (err) {
         console.error("WASM Load Error:", err);
-        setErrorMessage("Failed to load Rust WASM binary.");
+        // Structure folding still works without it; only topology analysis is lost.
+        setStatusInfo(
+          "Topology engine unavailable — build it with: cd rust && wasm-pack build --target web --out-dir ../web_ui/public/wasm"
+        );
       }
     }
     loadWasm();
@@ -70,6 +79,18 @@ export default function BioKnotDashboard() {
       }
     }
     return coords;
+  };
+
+  // analyze_protein_knot takes a JSON array of {x,y,z} points, not a flat buffer.
+  const analyseTopology = (flatCoords: number[]): TopologyReport | null => {
+    if (!wasmModule || flatCoords.length < 9) return null;
+
+    const points = [];
+    for (let i = 0; i < flatCoords.length; i += 3) {
+      points.push({ x: flatCoords[i], y: flatCoords[i + 1], z: flatCoords[i + 2] });
+    }
+
+    return wasmModule.analyze_protein_knot(JSON.stringify(points)) as TopologyReport | null;
   };
 
   const render3DStructure = (pdbContent: string) => {
@@ -126,16 +147,11 @@ export default function BioKnotDashboard() {
         render3DStructure(pdbData);
 
         const caCoords = parseCaCoordinates(pdbData);
-        if (wasmReady && wasmModule && caCoords.length > 0) {
-          const t0 = performance.now();
-          const coordsFloat64 = new Float64Array(caCoords);
-          const res = wasmModule.analyze_topology_wasm(coordsFloat64) as TopologyReport;
-          const t1 = performance.now();
+        const t0 = performance.now();
+        const res = analyseTopology(caCoords);
+        const t1 = performance.now();
 
-          if (typeof (res as any).knot_type === 'function') {
-            res.knot_type = (res as any).knot_type();
-          }
-
+        if (res) {
           setExecTime((t1 - t0).toFixed(4));
           setActiveReport(res);
         }
@@ -159,23 +175,14 @@ export default function BioKnotDashboard() {
           const pdbData = await foldSequenceChunk(domainSeq);
           const caCoords = parseCaCoordinates(pdbData);
 
-          if (wasmReady && wasmModule && caCoords.length > 0) {
-            const coordsFloat64 = new Float64Array(caCoords);
-            const res = wasmModule.analyze_topology_wasm(coordsFloat64) as TopologyReport;
-
-            if (typeof (res as any).knot_type === 'function') {
-              res.knot_type = (res as any).knot_type();
-            }
-
-            results.push({
-              domainIndex: results.length + 1,
-              startResidue: start + 1,
-              endResidue: end,
-              sequence: domainSeq,
-              report: res,
-              pdbData,
-            });
-          }
+          results.push({
+            domainIndex: results.length + 1,
+            startResidue: start + 1,
+            endResidue: end,
+            sequence: domainSeq,
+            report: analyseTopology(caCoords),
+            pdbData,
+          });
 
           if (end === cleanSeq.length) break;
         }
@@ -209,7 +216,7 @@ export default function BioKnotDashboard() {
           </p>
         </div>
         <span className={`px-4 py-2 rounded-full text-xs font-semibold ${wasmReady ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800'}`}>
-          {wasmReady ? 'Rust WASM Engine Active' : 'Initializing Module...'}
+          {wasmReady ? 'Rust WASM Engine Active' : 'WASM Engine Unavailable'}
         </span>
       </header>
 
@@ -244,7 +251,7 @@ export default function BioKnotDashboard() {
 
           <button
             onClick={handlePredict3DAndAnalyze}
-            disabled={!wasmReady || isPredicting}
+            disabled={isPredicting}
             className="w-full py-3 px-6 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 text-white font-medium rounded-lg transition-colors shadow-lg flex justify-center items-center gap-2"
           >
             {isPredicting ? (
@@ -277,7 +284,7 @@ export default function BioKnotDashboard() {
                     : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
                 }`}
               >
-                Domain {dom.domainIndex} ({dom.startResidue}–{dom.endResidue} AA): {dom.report.knot_type}
+                Domain {dom.domainIndex} ({dom.startResidue}–{dom.endResidue} AA): {dom.report?.knot_type ?? "n/a"}
               </button>
             ))}
           </div>
@@ -305,26 +312,26 @@ export default function BioKnotDashboard() {
                       {activeReport.knot_type || "Unknot (0_1)"}
                     </div>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${activeReport.is_entangled ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-slate-800 text-slate-300'}`}>
-                    {activeReport.is_entangled ? 'KNOTTED' : 'UNKNOTTED'}
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${activeReport.is_knotted ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-slate-800 text-slate-300'}`}>
+                    {activeReport.is_knotted ? 'KNOTTED' : 'UNKNOTTED'}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
                     <div className="text-slate-500 text-xs">Backbone C-alpha Atoms</div>
-                    <div className="text-xl font-bold mt-1">{activeReport.num_residues}</div>
+                    <div className="text-xl font-bold mt-1">{activeReport.raw_node_count}</div>
                   </div>
                   <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
-                    <div className="text-slate-500 text-xs">Projected Crossings</div>
-                    <div className="text-xl font-bold mt-1">{activeReport.estimated_crossing_number}</div>
+                    <div className="text-slate-500 text-xs">Reduced Nodes (KMT)</div>
+                    <div className="text-xl font-bold mt-1">{activeReport.reduced_node_count}</div>
                   </div>
                 </div>
 
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 flex justify-between items-center">
                   <div>
-                    <div className="text-slate-500 text-xs">Spatial Diameter (D_max)</div>
-                    <div className="text-base font-semibold mt-1">{activeReport.max_diameter.toFixed(2)} Å</div>
+                    <div className="text-slate-500 text-xs">Knot Probability (50 projections)</div>
+                    <div className="text-base font-semibold mt-1">{(activeReport.knot_probability * 100).toFixed(1)}%</div>
                   </div>
                   {execTime && (
                     <div className="text-right">

@@ -2,7 +2,8 @@ import sys
 import os
 import requests
 
-SERVER_URL = "http://127.0.0.1:8000/predict"
+BASE = os.environ.get("BIOKNOT_URL", "http://127.0.0.1:7860")
+SERVER_URL = f"{BASE}/predict"
 
 def test_sequence(fasta_or_seq):
     # Strip FASTA headers if present

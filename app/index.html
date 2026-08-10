@@ -82,10 +82,17 @@
                 });
                 const data = await response.json();
 
+                if (!response.ok || data.error) {
+                    knotOut.innerHTML = `<span style="color: #ef4444;">${data.error || 'Request failed (HTTP ' + response.status + ')'}</span>`;
+                    jsonOut.textContent = JSON.stringify(data, null, 2);
+                    return;
+                }
+
                 const isUnknot = data.predicted_knot && data.predicted_knot.includes('Unknot');
                 const badgeClass = isUnknot ? 'unknot' : 'knot';
 
                 knotOut.innerHTML = `
+                    ${data.warning ? `<div style="color:#fbbf24; margin-bottom:8px;">${data.warning}</div>` : ''}
                     <div><strong>Evaluated Length:</strong> ${data.evaluated_length} AA (Total: ${data.sequence_length} AA)</div>
                     <div><strong>Predicted Topology:</strong> <span class="knot-badge ${badgeClass}">${data.predicted_knot}</span></div>
                     <div><strong>Confidence:</strong> ${(data.confidence * 100).toFixed(2)}%</div>
@@ -125,6 +132,15 @@
                         body: JSON.stringify({ sequence: chunk })
                     });
                     const data = await response.json();
+
+                    if (!response.ok || data.error) {
+                        rowsHtml += `<tr>
+                            <td>AA ${start.toString().padStart(5, '0')} - ${end.toString().padStart(5, '0')}</td>
+                            <td style="color:#ef4444;" colspan="2">${data.error || 'HTTP ' + response.status}</td>
+                        </tr>`;
+                        break;
+                    }
+
                     const isUnknot = data.predicted_knot && data.predicted_knot.includes('Unknot');
                     const color = isUnknot ? '#4ade80' : '#f87171';
 
@@ -177,6 +193,7 @@
                 knotOut.innerHTML = `
                     <div><strong>3D Engine:</strong> ${data.engine}</div>
                     <div><strong>C-Alpha Backbone Nodes Extracted:</strong> ${data.ca_coords.length}</div>
+                    ${data.truncated ? '<div style="color:#fbbf24;">Partial result: the fold exceeded the time budget or an upstream window failed, so the chain stops early.</div>' : ''}
                 `;
                 jsonOut.textContent = JSON.stringify(data, null, 2);
 

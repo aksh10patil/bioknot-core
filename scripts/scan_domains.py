@@ -1,8 +1,15 @@
+import os
+import pathlib
+
 import requests
 
-url = "http://127.0.0.1:8000/predict_custom"
+BASE = os.environ.get("BIOKNOT_URL", "http://127.0.0.1:7860")
+url = f"{BASE}/predict_custom"
 
-with open("combined_sequence.txt", "r") as f:
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+SEQ_FILE = REPO_ROOT / "data" / "combined_sequence.txt"
+
+with open(SEQ_FILE, "r") as f:
     full_seq = f.read().replace("\n", "").strip()
 
 print(f"[Domain Scanner] Total Sequence Length: {len(full_seq)} AA")
@@ -18,7 +25,7 @@ for start in range(0, len(full_seq) - window_size + 1, stride):
     chunk = full_seq[start:end]
     
     try:
-        res = requests.post(url, json={"sequence": chunk}, timeout=10).json()
+        res = requests.post(url, json={"sequence": chunk}, timeout=60).json()
         knot = res.get("predicted_knot", "Unknown")
         conf = res.get("confidence", 0.0)
         
