@@ -20,6 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Create /app owned by `user` rather than letting WORKDIR create it as root.
+# COPY --chown fixes the ownership of copied contents but not of the directory
+# itself, and the training step below writes a NEW file (bioknot_native.pt) into
+# it, which needs write permission on the directory.
+RUN install -d -o user -g user /app
 WORKDIR /app
 
 COPY --chown=user:user requirements.txt .
