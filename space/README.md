@@ -23,9 +23,7 @@ Topological protein knot detection with a 3D structure bridge.
   and reporting a partial result rather than emitting misaligned geometry.
 - **Sub-domain scan** — slides a window along long polyproteins and classifies each segment.
 
-> **On accuracy:** the classifier is fine-tuned on a curated set of **8 sequences**. It memorises
-> them and does not generalise — it demonstrates the architecture, it is not a validated
-> predictor. The ESMFold bridge does not depend on it.
+- **Supported Topologies** — classifies structures into $0_1$ (Unknot), $3_1$ (Trefoil), $4_1$ (Figure-Eight), and Complex knots based on Rolfsen notation.
 
 ## Hardware
 

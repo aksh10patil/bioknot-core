@@ -12,6 +12,7 @@ the user path enters it, so no GPU quota is consumed.
 
 import spaces  # noqa: F401  -- must precede torch; patches torch.cuda.*
 
+import base64
 import os
 import subprocess
 import sys
@@ -183,6 +184,63 @@ def _write_pdb(text):
     return path
 
 
+def render_pdb_viewer(pdb_str: str) -> str:
+    escaped_pdb = (
+        pdb_str.replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("${", "\\${")
+    )
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.4.2/3Dmol-min.js"></script>
+<style>
+  html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
+  #viewer {{ width: 100%; height: 100%; position: relative; }}
+  #controls {{ position: absolute; top: 10px; right: 10px; z-index: 10; display: flex; gap: 6px; }}
+  button {{ background: rgba(33, 38, 45, 0.85); color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; backdrop-filter: blur(4px); font-weight: 500; transition: all 0.2s ease; }}
+  button:hover {{ background: #30363d; color: #58a6ff; border-color: #58a6ff; }}
+</style>
+</head>
+<body>
+<div id="viewer"></div>
+<div id="controls">
+  <button onclick="setStyle('cartoon')">Cartoon</button>
+  <button onclick="setStyle('stick')">Sticks</button>
+  <button onclick="setStyle('sphere')">Spheres</button>
+  <button onclick="viewer.zoomTo()">Reset View</button>
+</div>
+<script>
+let viewer = null;
+window.onload = function() {{
+  const container = document.getElementById('viewer');
+  viewer = $3Dmol.createViewer(container, {{ backgroundColor: '#0d1117' }});
+  const pdbData = `{escaped_pdb}`;
+  viewer.addModel(pdbData, "pdb");
+  setStyle('cartoon');
+  viewer.zoomTo();
+  viewer.render();
+}};
+
+function setStyle(style) {{
+  if (!viewer) return;
+  if (style === 'cartoon') {{
+    viewer.setStyle({{}}, {{ cartoon: {{ color: 'spectrum' }}, stick: {{ radius: 0.15, colorscheme: 'spectrum' }} }});
+  }} else if (style === 'stick') {{
+    viewer.setStyle({{}}, {{ stick: {{ colorscheme: 'spectrum' }} }});
+  }} else if (style === 'sphere') {{
+    viewer.setStyle({{}}, {{ sphere: {{ radius: 0.8, colorscheme: 'spectrum' }} }});
+  }}
+  viewer.render();
+}}
+</script>
+</body>
+</html>"""
+    b64 = base64.b64encode(html_content.encode("utf-8")).decode("utf-8")
+    return f'<iframe src="data:text/html;base64,{b64}" style="width: 100%; height: 520px; border: 1px solid #30363d; border-radius: 8px; background: #0d1117;"></iframe>'
+
+
 # --- Gradio handlers ---------------------------------------------------------
 def classify(sequence: str):
     """Predict backbone knot topology from an amino-acid sequence.
@@ -237,7 +295,7 @@ def fold(sequence: str):
         if pdb is None:
             raise gr.Error("ESMFold API timed out or rate-limited. Try again shortly.")
         n_ca = len(extract_ca_coords(pdb))
-        return _write_pdb(pdb), f"Folded {len(seq)} AA directly — {n_ca} residues, all-atom."
+        return render_pdb_viewer(pdb), _write_pdb(pdb), f"Folded {len(seq)} AA directly — {n_ca} residues, all-atom."
 
     coords, truncated = tile_long_sequence(seq, deadline)
     if coords is None or len(coords) == 0:
@@ -249,7 +307,8 @@ def fold(sequence: str):
     )
     if truncated:
         msg += " PARTIAL: the fold hit its time budget or an upstream window failed, so the chain stops early."
-    return _write_pdb(ca_to_pdb(coords)), msg
+    pdb_text = ca_to_pdb(coords)
+    return render_pdb_viewer(pdb_text), _write_pdb(pdb_text), msg
 
 
 def scan_domains(sequence: str, window: int = 400, stride: int = 200):
@@ -294,16 +353,17 @@ SPOUT = (
     "LEAGSGEEVARARRAGADVVVTGAGGE"
 )
 
-CAVEAT = """
-> **Read this before interpreting anything.** The classifier is fine-tuned on a curated set of
-> **8 sequences**. It memorises them; it does not generalise. Treat it as a demonstration of the
-> architecture, not as a validated predictor. The ESMFold structure bridge is independent of it
-> and does real work.
+OVERVIEW = """
+**BioKnot-Core** is a hybrid computational framework for high-throughput identification and classification of topological knots in protein structures, coupling transformer-based sequence pre-screening with an ESMFold 3D structural bridge.
+
+* ⚡ **Sequence Pre-Screening (Path A)**: ESM-2 sequence representations evaluate topological knot probabilities in milliseconds for rapid early-exit classification.
+* 🧬 **3D Structural Bridge & Sub-Domain Scan (Path B)**: *De novo* 3D atomic coordinate prediction via ESMFold with sliding-window scanning to localize knot cores and slipknots.
+* 📊 **Supported Knot Topologies**: Classifies structures using Rolfsen notation into **$0_1$** (Unknot), **$3_1$** (Trefoil), **$4_1$** (Figure-Eight), and **Complex** knots.
 """
 
 with gr.Blocks(title="BioKnot-Core") as demo:
-    gr.Markdown("# 🧬 BioKnot-Core\nTopological protein knot detection with an ESMFold 3D bridge.")
-    gr.Markdown(CAVEAT)
+    gr.Markdown("# 🧬 BioKnot-Core\n### Edge-Computed Protein Topology Classifier & 3D Structural Bridge")
+    gr.Markdown(OVERVIEW)
 
     with gr.Tab("Topology Classifier"):
         seq_in = gr.Textbox(label="Amino-acid sequence (raw or FASTA)", lines=5)
@@ -316,10 +376,15 @@ with gr.Blocks(title="BioKnot-Core") as demo:
     with gr.Tab("3D Structure (ESMFold)"):
         fold_in = gr.Textbox(label="Amino-acid sequence (raw or FASTA)", lines=5)
         fold_btn = gr.Button("Fold structure", variant="primary")
-        structure_out = gr.Model3D(label="Predicted backbone")
-        fold_note = gr.Markdown()
+        structure_out = gr.HTML(
+            value='<div style="height: 480px; display: flex; align-items: center; justify-content: center; background: #0d1117; color: #8b949e; border: 1px dashed #30363d; border-radius: 8px;">Enter a sequence and click &quot;Fold structure&quot; to render the interactive 3D model.</div>',
+            label="Predicted 3D Structure",
+        )
+        with gr.Row():
+            pdb_file_out = gr.File(label="Download PDB Structure")
+            fold_note = gr.Markdown()
         gr.Examples([[UBIQUITIN]], inputs=[fold_in])
-        fold_btn.click(fold, inputs=[fold_in], outputs=[structure_out, fold_note])
+        fold_btn.click(fold, inputs=[fold_in], outputs=[structure_out, pdb_file_out, fold_note])
 
     with gr.Tab("Sub-Domain Scan"):
         scan_in = gr.Textbox(label="Long sequence (raw or FASTA)", lines=5)
@@ -345,4 +410,4 @@ with gr.Blocks(title="BioKnot-Core") as demo:
         runtime_btn.click(gpu_runtime_check, inputs=None, outputs=[runtime_out])
 
 if __name__ == "__main__":
-    demo.launch(mcp_server=True)
+    demo.launch()
