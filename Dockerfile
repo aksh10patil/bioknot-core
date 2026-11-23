@@ -1,7 +1,16 @@
-# Pinned to amd64: the torch CPU index publishes 2.5.1+cpu for linux_x86_64 only,
-# so an arm64 build (e.g. an Apple Silicon laptop) would fail to resolve it.
-# Hugging Face Spaces builds amd64, so this is a no-op there.
+# Stage 1: Build the Rust topological verifier CLI
+FROM --platform=linux/amd64 rust:1.83-slim as builder
+WORKDIR /build
+COPY rust /build/rust
+WORKDIR /build/rust
+RUN cargo build --release --bin bioknot_cli
+
+# Stage 2: Python runtime image
 FROM --platform=linux/amd64 python:3.10-slim
+
+# Copy compiled Rust CLI binary from builder
+COPY --from=builder /build/rust/target/release/bioknot_cli /usr/local/bin/bioknot_cli
+RUN chmod +x /usr/local/bin/bioknot_cli
 
 # Hugging Face Spaces runs containers as UID 1000; matching it keeps the HF cache
 # and the trained checkpoint writable at runtime.
@@ -34,12 +43,10 @@ COPY --chown=user:user . /app
 
 USER user
 
-# Bake the ESM-2 backbone into an image layer so cold starts do not re-download
-# it, then fine-tune the classifier head. Training here (rather than shipping a
-# checkpoint or initialising randomly at boot) means the image carries
-# deterministic, reproducible weights and every worker agrees on them.
-RUN python training/preload.py \
-    && python -m training.train --seed 42
+# Preload the ESM-2 backbone weights into the container image layer so cold starts
+# do not download them. Pre-trained classifier weights (bioknot_native.pt) are copied
+# directly, avoiding slow boot-time CPU training and timeout risks.
+RUN python training/preload.py
 
 EXPOSE 7860
 

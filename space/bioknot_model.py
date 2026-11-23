@@ -8,14 +8,17 @@ checkpoint can never silently disagree with the serving code.
 """
 
 import os
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, EsmModel
 
-ESM_CHECKPOINT = "facebook/esm2_t6_8M_UR50D"
+DEFAULT_BACKBONE = "facebook/esm2_t6_8M_UR50D"
+ESM_CHECKPOINT = DEFAULT_BACKBONE  # Backward-compatible alias
 NUM_CLASSES = 4
 MAX_TOKENS = 1024
+MAX_RESIDUES = MAX_TOKENS - 2  # 1022 (accounts for leading <cls> and trailing <eos>)
 
 CLASS_MAP = {
     0: "Unknot (0_1)",
@@ -31,10 +34,20 @@ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_WEIGHTS_PATH = os.path.join(MODULE_DIR, "bioknot_native.pt")
 
 
+def get_device() -> torch.device:
+    """Select accelerated device: CUDA -> MPS (Apple Silicon) -> CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 class BioKnotClassifier(nn.Module):
-    def __init__(self, num_classes=NUM_CLASSES):
+    def __init__(self, num_classes: int = NUM_CLASSES, backbone: str = DEFAULT_BACKBONE):
         super(BioKnotClassifier, self).__init__()
-        self.esm = EsmModel.from_pretrained(ESM_CHECKPOINT)
+        self.backbone_name = backbone
+        self.esm = EsmModel.from_pretrained(backbone)
 
         for param in self.esm.parameters():
             param.requires_grad = False
@@ -50,32 +63,49 @@ class BioKnotClassifier(nn.Module):
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(256, num_classes)
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         outputs = self.esm(input_ids=input_ids, attention_mask=attention_mask)
         seq_embeddings = outputs.last_hidden_state
 
+        # Construct residue-only float mask: zero out <pad>, leading <cls> (idx 0), and trailing <eos>
+        residue_mask = attention_mask.clone().float()
+        residue_mask[:, 0] = 0.0
+        lengths = attention_mask.sum(dim=1).long()
+        for b, l in enumerate(lengths):
+            if l > 0:
+                residue_mask[b, l - 1] = 0.0
+
+        # Multiply seq_embeddings by residue_mask.unsqueeze(-1) before transposing into conv1
+        seq_embeddings = seq_embeddings * residue_mask.unsqueeze(-1)
         x = seq_embeddings.transpose(1, 2)
         x = self.relu(self.conv1(x))
+
+        # Multiply activations by residue_mask.unsqueeze(1) before pooling
+        mask_2d = residue_mask.unsqueeze(1)
+        x = x * mask_2d
         x = self.dropout(x)
-        x = self.pool(x).squeeze(-1)
-        logits = self.fc(x)
+
+        # Masked mean pooling
+        pooled = (x * mask_2d).sum(dim=-1) / mask_2d.sum(dim=-1).clamp(min=1.0)
+        logits = self.fc(pooled)
         return logits
 
 
-def load_tokenizer():
-    return AutoTokenizer.from_pretrained(ESM_CHECKPOINT)
+def load_tokenizer(backbone: str = DEFAULT_BACKBONE):
+    return AutoTokenizer.from_pretrained(backbone)
 
 
-def load_classifier(weights_path=None):
+def load_classifier(
+    weights_path: Optional[str] = None,
+    backbone: str = DEFAULT_BACKBONE,
+    device: Optional[torch.device] = None,
+) -> Tuple[BioKnotClassifier, bool]:
     """Build the classifier and load fine-tuned weights.
 
-    Returns `(model, loaded)`. `loaded` is False when no checkpoint was found, in
-    which case the classification head is randomly initialised and its output is
-    meaningless -- callers must treat that as an error state rather than serving
-    the predictions. See `app.py`.
+    Returns `(model, loaded)`. `loaded` is False when no checkpoint was found.
     """
     weights_path = weights_path or os.environ.get("BIOKNOT_WEIGHTS", DEFAULT_WEIGHTS_PATH)
-    model = BioKnotClassifier(num_classes=NUM_CLASSES)
+    model = BioKnotClassifier(num_classes=NUM_CLASSES, backbone=backbone)
 
     loaded = False
     if os.path.exists(weights_path):
@@ -83,11 +113,14 @@ def load_classifier(weights_path=None):
         model.load_state_dict(state)
         loaded = True
 
+    if device is not None:
+        model.to(device)
+
     model.eval()
     return model, loaded
 
 
-def sanitise_sequence(raw):
+def sanitise_sequence(raw: str) -> Tuple[Optional[str], Optional[str]]:
     """Strip FASTA headers and whitespace, upper-case, and validate residues.
 
     Returns `(sequence, error)`.

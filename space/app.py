@@ -10,10 +10,21 @@ Both run on CPU: ESM-2 8M is small and the fold is an upstream API call, so the
 the user path enters it, so no GPU quota is consumed.
 """
 
-import spaces  # noqa: F401  -- must precede torch; patches torch.cuda.*
+try:
+    import spaces  # noqa: F401  -- must precede torch; patches torch.cuda.*
+except ImportError:
+    class _MockSpaces:
+        @staticmethod
+        def GPU(duration=5):
+            def decorator(fn):
+                return fn
+            return decorator
+    spaces = _MockSpaces()
 
 import base64
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,14 +35,26 @@ import numpy as np
 import requests
 import torch
 
-from bioknot_model import (
-    CLASS_MAP,
-    DEFAULT_WEIGHTS_PATH,
-    MAX_TOKENS,
-    load_classifier,
-    load_tokenizer,
-    sanitise_sequence,
-)
+try:
+    from bioknot_model import (
+        CLASS_MAP,
+        DEFAULT_WEIGHTS_PATH,
+        MAX_RESIDUES,
+        MAX_TOKENS,
+        load_classifier,
+        load_tokenizer,
+        sanitise_sequence,
+    )
+except ImportError:
+    from space.bioknot_model import (
+        CLASS_MAP,
+        DEFAULT_WEIGHTS_PATH,
+        MAX_RESIDUES,
+        MAX_TOKENS,
+        load_classifier,
+        load_tokenizer,
+        sanitise_sequence,
+    )
 
 MAX_SEQUENCE_LENGTH = 2000
 ESMFOLD_URL = "https://api.esmatlas.com/foldSequence/v1/pdb/"
@@ -41,28 +64,36 @@ FOLD_DEADLINE_SECONDS = 240
 WINDOW_SIZE = 380
 STRIDE = 200
 
+AA1_TO_AA3 = {
+    "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
+    "E": "GLU", "Q": "GLN", "G": "GLY", "H": "HIS", "I": "ILE",
+    "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
+    "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL",
+}
+
 # --- Model bootstrap ---------------------------------------------------------
 print("[boot] loading tokenizer + classifier...", flush=True)
 tokenizer = load_tokenizer()
 
-if not os.path.exists(DEFAULT_WEIGHTS_PATH):
-    # No checkpoint shipped with the Space: train one now. Deterministic (seeded)
-    # and a few minutes on this dataset -- shipping the .pt skips all of this.
-    #
-    # It must run in a SUBPROCESS. This module has already imported `spaces`,
-    # which patches torch to report CUDA as the active accelerator; an Adam step
-    # in this process then calls into CUDA that does not exist here and raises
-    # `no CUDA-capable device is detected`. A fresh interpreter sees plain CPU
-    # torch and trains normally.
-    print("[boot] no checkpoint found — training the head (this takes a few minutes)", flush=True)
-    subprocess.run(
-        [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_head.py"),
-         DEFAULT_WEIGHTS_PATH],
-        check=True,
-    )
+candidate_weights = [
+    DEFAULT_WEIGHTS_PATH,
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bioknot_native.pt"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bioknot_native.pt"),
+    "/app/bioknot_native.pt",
+]
 
-native_model, WEIGHTS_LOADED = load_classifier(DEFAULT_WEIGHTS_PATH)
-print(f"[boot] classifier ready (weights_loaded={WEIGHTS_LOADED})", flush=True)
+weights_to_load = None
+for w_path in candidate_weights:
+    if os.path.exists(w_path):
+        weights_to_load = w_path
+        break
+
+if weights_to_load:
+    native_model, WEIGHTS_LOADED = load_classifier(weights_to_load)
+    print(f"[boot] classifier ready from {weights_to_load} (weights_loaded={WEIGHTS_LOADED})", flush=True)
+else:
+    native_model, WEIGHTS_LOADED = load_classifier(None)
+    print("[boot] [WARN] No pre-built bioknot_native.pt found. Please sync champion weights.", flush=True)
 
 
 @spaces.GPU(duration=5)
@@ -101,15 +132,17 @@ def fetch_pdb(seq_chunk, deadline=None):
 
 def extract_ca_coords(pdb_str):
     coords = []
+    plddts = []
     for line in pdb_str.splitlines():
         if line.startswith("ATOM") and line[12:16].strip() == "CA":
             try:
                 coords.append(
                     [float(line[30:38]), float(line[38:46]), float(line[46:54])]
                 )
+                plddts.append(float(line[60:66].strip()))
             except ValueError:
                 continue
-    return np.array(coords)
+    return np.array(coords), np.array(plddts)
 
 
 def kabsch_rotation(target_overlap, ref_overlap):
@@ -127,54 +160,99 @@ def kabsch_rotation(target_overlap, ref_overlap):
 def tile_long_sequence(sequence, deadline):
     """Stitch overlapping windows, keeping index i aligned to residue i.
 
-    If a window fails or the overlap is too short to fit, alignment can no longer
-    be guaranteed, so we stop and report a truncated chain rather than emitting
-    misaligned geometry.
+    Splices at midpoint of overlap (mid = n // 2) and records seam RMSD.
     """
     seq_len = len(sequence)
     overlap = WINDOW_SIZE - STRIDE
+    seam_rmsds = []
 
     first = fetch_pdb(sequence[0:WINDOW_SIZE], deadline)
     if first is None:
-        return None, False
-    full_chain = extract_ca_coords(first)
+        return None, None, False, seam_rmsds
+    full_chain, full_plddts = extract_ca_coords(first)
 
     for start in range(STRIDE, seq_len, STRIDE):
         if time.time() >= deadline:
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
         end = min(start + WINDOW_SIZE, seq_len)
         if end - start < 5 or start >= len(full_chain):
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
         nxt = fetch_pdb(sequence[start:end], deadline)
         if nxt is None:
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
-        w = extract_ca_coords(nxt)
+        w, w_plddts = extract_ca_coords(nxt)
         n = min(overlap, len(full_chain) - start, len(w))
         if n < 5:
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
-        R, ct, cr = kabsch_rotation(w[:n], full_chain[start : start + n])
+        ref_overlap = full_chain[start : start + n]
+        R, ct, cr = kabsch_rotation(w[:n], ref_overlap)
         aligned = np.dot(w - ct, R.T) + cr
-        full_chain = np.vstack([full_chain[: start + n], aligned[n:]])
+
+        seam_rmsd = float(np.sqrt(np.mean(np.sum((aligned[:n] - ref_overlap) ** 2, axis=1))))
+        seam_rmsds.append(seam_rmsd)
+
+        mid = n // 2
+        full_chain = np.vstack([full_chain[: start + mid], aligned[mid:]])
+        full_plddts = np.concatenate([full_plddts[: start + mid], w_plddts[mid:]])
 
         if end == seq_len:
             break
 
-    return full_chain, False
+    return full_chain, full_plddts, False, seam_rmsds
 
 
-def ca_to_pdb(coords):
-    """Write a C-alpha-only backbone as a minimal PDB."""
+def ca_to_pdb(coords, plddts=None, sequence=None):
+    """Write a C-alpha-only backbone as a minimal PDB with real 3-letter AA and pLDDT B-factors."""
     lines = []
     for i, p in enumerate(coords, start=1):
+        res_name = "UNK"
+        if sequence and i - 1 < len(sequence):
+            res_name = AA1_TO_AA3.get(sequence[i - 1].upper(), "UNK")
+        b_factor = float(plddts[i - 1]) if (plddts is not None and i - 1 < len(plddts)) else 0.00
         lines.append(
-            f"ATOM  {i:>5}  CA  GLY A{i:>4}    "
-            f"{p[0]:>8.3f}{p[1]:>8.3f}{p[2]:>8.3f}  1.00  0.00           C"
+            f"ATOM  {i:>5}  CA  {res_name:>3} A{i:>4}    "
+            f"{p[0]:>8.3f}{p[1]:>8.3f}{p[2]:>8.3f}  1.00{b_factor:>6.2f}           C"
         )
     lines.append("END")
     return "\n".join(lines)
+
+
+def get_cli_path():
+    env_cli = os.environ.get("BIOKNOT_CLI_PATH")
+    if env_cli and os.path.isfile(env_cli) and os.access(env_cli, os.X_OK):
+        return env_cli
+    which_cli = shutil.which("bioknot_cli")
+    if which_cli:
+        return which_cli
+    space_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(space_dir, "bioknot_cli"),
+        os.path.join(space_dir, "..", "rust", "target", "release", "bioknot_cli"),
+        os.path.join(space_dir, "..", "target", "release", "bioknot_cli"),
+        "/usr/local/bin/bioknot_cli",
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def verify_topology_3d(coords):
+    """Run Rust topological verification on 3D coordinates via bioknot_cli."""
+    cli = get_cli_path()
+    if not cli:
+        return None
+    try:
+        data = json.dumps([{"x": float(p[0]), "y": float(p[1]), "z": float(p[2])} for p in coords])
+        res = subprocess.run([cli], input=data, capture_output=True, text=True, timeout=15)
+        if res.returncode == 0:
+            return json.loads(res.stdout)
+    except Exception as e:
+        print(f"[verifier] 3D topology check error: {e}", flush=True)
+    return None
 
 
 def _write_pdb(text):
@@ -254,18 +332,20 @@ def classify(sequence: str):
     seq, err = sanitise_sequence(sequence or "")
     if err:
         raise gr.Error(err)
+    if not WEIGHTS_LOADED:
+        raise gr.Error("Classifier weights not loaded. Please provide or sync bioknot_native.pt.")
     if len(seq) > MAX_SEQUENCE_LENGTH:
         raise gr.Error(f"{len(seq)} AA exceeds the {MAX_SEQUENCE_LENGTH} AA limit.")
 
-    evaluated = seq[:MAX_TOKENS]
+    evaluated = seq[:MAX_RESIDUES]
     inputs = tokenizer(evaluated, return_tensors="pt", truncation=True, max_length=MAX_TOKENS)
     with torch.no_grad():
         logits = native_model(inputs["input_ids"], inputs["attention_mask"])
         probs = torch.softmax(logits, dim=-1).squeeze(0).numpy()
 
     note = f"Evaluated {len(evaluated)} of {len(seq)} AA."
-    if len(seq) > MAX_TOKENS:
-        note += f" Truncated to the {MAX_TOKENS} AA model capacity."
+    if len(seq) > MAX_RESIDUES:
+        note += f" Truncated to the {MAX_RESIDUES} AA model capacity."
 
     return {CLASS_MAP[i]: float(probs[i]) for i in range(len(CLASS_MAP))}, note
 
@@ -285,6 +365,8 @@ def fold(sequence: str):
     seq, err = sanitise_sequence(sequence or "")
     if err:
         raise gr.Error(err)
+    if not WEIGHTS_LOADED:
+        raise gr.Error("Classifier weights not loaded. Please provide or sync bioknot_native.pt.")
     if len(seq) > MAX_SEQUENCE_LENGTH:
         raise gr.Error(f"{len(seq)} AA exceeds the {MAX_SEQUENCE_LENGTH} AA limit.")
 
@@ -294,20 +376,36 @@ def fold(sequence: str):
         pdb = fetch_pdb(seq, deadline)
         if pdb is None:
             raise gr.Error("ESMFold API timed out or rate-limited. Try again shortly.")
-        n_ca = len(extract_ca_coords(pdb))
-        return render_pdb_viewer(pdb), _write_pdb(pdb), f"Folded {len(seq)} AA directly — {n_ca} residues, all-atom."
+        coords, plddts = extract_ca_coords(pdb)
+        topo = verify_topology_3d(coords)
+        if topo:
+            topo_str = f" | Rust Topological Verifier: **{topo.get('knot_type')}** (p={topo.get('knot_probability', 1.0)*100:.1f}%)"
+        else:
+            topo_str = " | Rust Topological Verifier: *Standby (CLI not detected)*"
+        return render_pdb_viewer(pdb), _write_pdb(pdb), f"Folded {len(seq)} AA directly — {len(coords)} residues, all-atom.{topo_str}"
 
-    coords, truncated = tile_long_sequence(seq, deadline)
+    coords, plddts, truncated, seam_rmsds = tile_long_sequence(seq, deadline)
     if coords is None or len(coords) == 0:
         raise gr.Error("ESMFold API failed on the initial window.")
 
+    max_seam = max(seam_rmsds) if seam_rmsds else 0.0
     msg = (
         f"Folded {len(seq)} AA via Kabsch tiling "
-        f"({WINDOW_SIZE} AA windows, {STRIDE} AA stride) — {len(coords)} C-alpha nodes."
+        f"({WINDOW_SIZE} AA windows, {STRIDE} AA stride) — {len(coords)} C-alpha nodes. "
+        f"Max seam RMSD: {max_seam:.2f} Å."
     )
+    if max_seam > 3.0:
+        msg += " ⚠️ High seam RMSD detected (> 3.0 Å); domain transition may have structural strain."
     if truncated:
         msg += " PARTIAL: the fold hit its time budget or an upstream window failed, so the chain stops early."
-    pdb_text = ca_to_pdb(coords)
+
+    topo = verify_topology_3d(coords)
+    if topo:
+        msg += f" | Rust Topological Verifier: **{topo.get('knot_type')}** (p={topo.get('knot_probability', 1.0)*100:.1f}%)"
+    else:
+        msg += " | Rust Topological Verifier: *Standby (CLI not detected)*"
+
+    pdb_text = ca_to_pdb(coords, plddts, seq)
     return render_pdb_viewer(pdb_text), _write_pdb(pdb_text), msg
 
 
@@ -325,6 +423,8 @@ def scan_domains(sequence: str, window: int = 400, stride: int = 200):
     seq, err = sanitise_sequence(sequence or "")
     if err:
         raise gr.Error(err)
+    if not WEIGHTS_LOADED:
+        raise gr.Error("Classifier weights not loaded. Please provide or sync bioknot_native.pt.")
     if len(seq) > MAX_SEQUENCE_LENGTH:
         raise gr.Error(f"{len(seq)} AA exceeds the {MAX_SEQUENCE_LENGTH} AA limit.")
 
@@ -353,12 +453,21 @@ SPOUT = (
     "LEAGSGEEVARARRAGADVVVTGAGGE"
 )
 
-OVERVIEW = """
-**BioKnot-Core** is a hybrid computational framework for high-throughput identification and classification of topological knots in protein structures, coupling transformer-based sequence pre-screening with an ESMFold 3D structural bridge.
+CLI_BIN = get_cli_path()
+OVERVIEW = f"""
+**BioKnot-Core** is a hybrid computational framework for high-throughput identification and classification of topological knots in protein structures, coupling transformer-based sequence pre-screening with an ESMFold 3D structural bridge and Alexander-polynomial topological verification.
 
-* ⚡ **Sequence Pre-Screening (Path A)**: ESM-2 sequence representations evaluate topological knot probabilities in milliseconds for rapid early-exit classification.
-* 🧬 **3D Structural Bridge & Sub-Domain Scan (Path B)**: *De novo* 3D atomic coordinate prediction via ESMFold with sliding-window scanning to localize knot cores and slipknots.
+* ⚡ **Sequence Pre-Screening (Path A)**: Fine-tuned ESM-2 (8M) transformer with masked residue pooling evaluates topological knot probabilities from sequence alone in milliseconds.
+* 🧬 **3D Structural Bridge & Verification (Path B)**: *De novo* 3D atomic coordinate prediction via ESMFold with midpoint Kabsch tiling for long chains, seam RMSD diagnostics, and mathematical knot invariant verification via compiled Rust.
 * 📊 **Supported Knot Topologies**: Classifies structures using Rolfsen notation into **$0_1$** (Unknot), **$3_1$** (Trefoil), **$4_1$** (Figure-Eight), and **Complex** knots.
+
+---
+### System Engine Status
+| Component | Runtime Engine | Status | Details |
+| :--- | :--- | :--- | :--- |
+| **Path A Classifier** | ESM-2 Transformer | {'🟢 Live' if WEIGHTS_LOADED else '🔴 Unloaded'} | {'Pre-trained weights active' if WEIGHTS_LOADED else 'Missing bioknot_native.pt'} |
+| **Path B Verifier** | Compiled Rust Engine | {'🟢 Active' if CLI_BIN else '🟡 Standby'} | {'`' + CLI_BIN + '`' if CLI_BIN else 'CLI not detected (Gradio SDK fallback mode)'} |
+| **3D Structure Bridge** | ESMFold + Midpoint Kabsch | 🟢 Live | Window=380 AA, Stride=200 AA |
 """
 
 with gr.Blocks(title="BioKnot-Core") as demo:

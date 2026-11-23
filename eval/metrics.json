@@ -1,0 +1,131 @@
+{
+  "dataset": {
+    "total_records": 1078,
+    "clustering": "mmseqs easy-cluster",
+    "mmseqs_version": "20-ae60e",
+    "mmseqs_flags": "--min-seq-id 0.3 -c 0.8 --cov-mode 0",
+    "total_clusters": 470,
+    "evaluation_strategy": "5-fold StratifiedGroupKFold (out-of-fold)",
+    "n_folds": 5
+  },
+  "model_performance": {
+    "macro_f1": 0.7952154875795726,
+    "weighted_f1": 0.8012532054479912,
+    "mcc": 0.6242900833130409,
+    "expected_calibration_error": 0.2256179763512178,
+    "per_class": {
+      "Unknot (0_1)": {
+        "precision": 0.8155339805825242,
+        "recall": 0.8909090909090909,
+        "f1": 0.8515568428674873,
+        "roc_auc": 0.8757213281136726,
+        "pr_auc": 0.9199819186705085,
+        "support": 660
+      },
+      "Trefoil (3_1)": {
+        "precision": 0.7723880597014925,
+        "recall": 0.6160714285714286,
+        "f1": 0.6854304635761589,
+        "roc_auc": 0.9111715440893339,
+        "pr_auc": 0.8244099970499736,
+        "support": 336
+      },
+      "Figure-Eight (4_1)": {
+        "precision": 0.9322033898305084,
+        "recall": 0.9482758620689655,
+        "f1": 0.9401709401709402,
+        "roc_auc": 0.9828769438810008,
+        "pr_auc": 0.9496966490329402,
+        "support": 58
+      },
+      "Complex": {
+        "precision": 0.6333333333333333,
+        "recall": 0.7916666666666666,
+        "f1": 0.7037037037037037,
+        "roc_auc": 0.9034234661606578,
+        "pr_auc": 0.622887135356998,
+        "support": 24
+      }
+    },
+    "confusion_matrix": [
+      [
+        588,
+        59,
+        4,
+        9
+      ],
+      [
+        127,
+        207,
+        0,
+        2
+      ],
+      [
+        3,
+        0,
+        55,
+        0
+      ],
+      [
+        3,
+        2,
+        0,
+        19
+      ]
+    ]
+  },
+  "binary_prescreening": {
+    "roc_auc": 0.8757213281136725,
+    "pr_auc": 0.8375756851704442,
+    "mcc": 0.5020205040789866,
+    "operating_points": {
+      "at_90_percent_knot_recall": {
+        "knot_recall": 0.9,
+        "unknot_specificity": 0.6166666666666667,
+        "decision_threshold": 0.44836896657943726,
+        "unknot_compute_saved_percent": 61.66666666666667,
+        "overall_compute_saved_percent": 41.55844155844156
+      },
+      "at_95_percent_knot_recall": {
+        "knot_recall": 0.95,
+        "unknot_specificity": 0.5848484848484848,
+        "decision_threshold": 0.4352244436740875,
+        "unknot_compute_saved_percent": 58.484848484848484,
+        "overall_compute_saved_percent": 37.66233766233766
+      }
+    },
+    "description": "Path A early-exit pre-screen: unknotted sequences bypass ESMFold 3D structure generation"
+  },
+  "baseline_ablation": {
+    "description": "Linear probe (Logistic Regression) on frozen mean-pooled ESM-2 embeddings across identical 5 folds",
+    "macro_f1": 0.7003073729227846,
+    "weighted_f1": 0.7639251286824184,
+    "mcc": 0.5518785510032516,
+    "per_class": {
+      "Unknot (0_1)": {
+        "f1": 0.8238805970149253,
+        "precision": 0.8117647058823529,
+        "recall": 0.8363636363636363,
+        "support": 660
+      },
+      "Trefoil (3_1)": {
+        "f1": 0.6449511400651465,
+        "precision": 0.7122302158273381,
+        "recall": 0.5892857142857143,
+        "support": 336
+      },
+      "Figure-Eight (4_1)": {
+        "f1": 0.9137931034482759,
+        "precision": 0.9137931034482759,
+        "recall": 0.9137931034482759,
+        "support": 58
+      },
+      "Complex": {
+        "f1": 0.4186046511627907,
+        "precision": 0.2903225806451613,
+        "recall": 0.75,
+        "support": 24
+      }
+    }
+  }
+}

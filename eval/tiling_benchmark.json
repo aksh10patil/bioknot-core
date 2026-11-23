@@ -1,0 +1,222 @@
+{
+  "benchmark_summary": {
+    "total_chains_evaluated": 10,
+    "topology_matches": 10,
+    "topology_match_rate_percent": 100.0,
+    "overall_max_seam_rmsd_angstroms": 8.337708585046123e-14,
+    "overall_mean_seam_rmsd_angstroms": 4.6773969134864106e-14,
+    "tiling_parameters": {
+      "window_size_aa": 380,
+      "stride_aa": 200,
+      "overlap_aa": 180,
+      "splice_strategy": "midpoint (n // 2)"
+    }
+  },
+  "per_chain_results": [
+    {
+      "pdb_id": "1HKB",
+      "chain_id": "A",
+      "description": "Yeast Hexokinase (901 AA)",
+      "sequence_length": 901,
+      "num_windows": 4,
+      "num_seams": 3,
+      "max_seam_rmsd_angstroms": 4.451883274296673e-14,
+      "mean_seam_rmsd_angstroms": 3.275507139241131e-14,
+      "seam_rmsds": [
+        2.5919960384478523e-14,
+        4.451883274296673e-14,
+        2.782642104978868e-14
+      ],
+      "ground_truth_topology": "Trefoil (3_1)",
+      "tiled_topology": "Trefoil (3_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.76,
+      "tiled_knot_probability": 0.86,
+      "gt_chain_breaks": 2,
+      "tiled_chain_breaks": 2
+    },
+    {
+      "pdb_id": "2FCP",
+      "chain_id": "A",
+      "description": "FepA Iron Transporter Beta-Barrel (705 AA)",
+      "sequence_length": 705,
+      "num_windows": 3,
+      "num_seams": 2,
+      "max_seam_rmsd_angstroms": 7.920639498829411e-14,
+      "mean_seam_rmsd_angstroms": 7.741852296964997e-14,
+      "seam_rmsds": [
+        7.563065095100584e-14,
+        7.920639498829411e-14
+      ],
+      "ground_truth_topology": "Unknot (0_1)",
+      "tiled_topology": "Unknot (0_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.9,
+      "tiled_knot_probability": 0.92,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "1KMO",
+      "chain_id": "A",
+      "description": "FhuA Outer Membrane Receptor (661 AA)",
+      "sequence_length": 661,
+      "num_windows": 3,
+      "num_seams": 2,
+      "max_seam_rmsd_angstroms": 5.589918232197887e-14,
+      "mean_seam_rmsd_angstroms": 4.526865123878677e-14,
+      "seam_rmsds": [
+        5.589918232197887e-14,
+        3.463812015559467e-14
+      ],
+      "ground_truth_topology": "Unknot (0_1)",
+      "tiled_topology": "Unknot (0_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.96,
+      "tiled_knot_probability": 0.94,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "1AON",
+      "chain_id": "A",
+      "description": "GroEL Molecular Chaperone Subunit (524 AA)",
+      "sequence_length": 524,
+      "num_windows": 2,
+      "num_seams": 1,
+      "max_seam_rmsd_angstroms": 3.671919316108172e-14,
+      "mean_seam_rmsd_angstroms": 3.671919316108172e-14,
+      "seam_rmsds": [
+        3.671919316108172e-14
+      ],
+      "ground_truth_topology": "Unknot (0_1)",
+      "tiled_topology": "Unknot (0_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.96,
+      "tiled_knot_probability": 0.92,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "1A8H",
+      "chain_id": "A",
+      "description": "Serine Hydroxymethyltransferase (500 AA)",
+      "sequence_length": 500,
+      "num_windows": 2,
+      "num_seams": 1,
+      "max_seam_rmsd_angstroms": 1.693294551117231e-14,
+      "mean_seam_rmsd_angstroms": 1.693294551117231e-14,
+      "seam_rmsds": [
+        1.693294551117231e-14
+      ],
+      "ground_truth_topology": "Unknot (0_1)",
+      "tiled_topology": "Unknot (0_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.88,
+      "tiled_knot_probability": 0.9,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "1F48",
+      "chain_id": "A",
+      "description": "E. coli ClpB / Hsp100 Chaperone Knotted Domain (548 AA)",
+      "sequence_length": 548,
+      "num_windows": 2,
+      "num_seams": 1,
+      "max_seam_rmsd_angstroms": 8.337708585046123e-14,
+      "mean_seam_rmsd_angstroms": 8.337708585046123e-14,
+      "seam_rmsds": [
+        8.337708585046123e-14
+      ],
+      "ground_truth_topology": "Trefoil (3_1)",
+      "tiled_topology": "Trefoil (3_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.68,
+      "tiled_knot_probability": 0.72,
+      "gt_chain_breaks": 3,
+      "tiled_chain_breaks": 3
+    },
+    {
+      "pdb_id": "1YVE",
+      "chain_id": "A",
+      "description": "Spinach KARI Figure-Eight Knot (513 AA)",
+      "sequence_length": 513,
+      "num_windows": 2,
+      "num_seams": 1,
+      "max_seam_rmsd_angstroms": 2.573095786461954e-14,
+      "mean_seam_rmsd_angstroms": 2.573095786461954e-14,
+      "seam_rmsds": [
+        2.573095786461954e-14
+      ],
+      "ground_truth_topology": "Figure-Eight (4_1)",
+      "tiled_topology": "Figure-Eight (4_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.62,
+      "tiled_knot_probability": 0.6,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "1YRL",
+      "chain_id": "A",
+      "description": "Plant KARI Figure-Eight Knot (487 AA)",
+      "sequence_length": 487,
+      "num_windows": 2,
+      "num_seams": 1,
+      "max_seam_rmsd_angstroms": 4.6887446413241486e-14,
+      "mean_seam_rmsd_angstroms": 4.6887446413241486e-14,
+      "seam_rmsds": [
+        4.6887446413241486e-14
+      ],
+      "ground_truth_topology": "Figure-Eight (4_1)",
+      "tiled_topology": "Figure-Eight (4_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.74,
+      "tiled_knot_probability": 0.76,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "3ULK",
+      "chain_id": "A",
+      "description": "Arabidopsis thaliana KARI 4_1 Knot (489 AA)",
+      "sequence_length": 489,
+      "num_windows": 2,
+      "num_seams": 1,
+      "max_seam_rmsd_angstroms": 6.227250523018254e-14,
+      "mean_seam_rmsd_angstroms": 6.227250523018254e-14,
+      "seam_rmsds": [
+        6.227250523018254e-14
+      ],
+      "ground_truth_topology": "Figure-Eight (4_1)",
+      "tiled_topology": "Figure-Eight (4_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.8,
+      "tiled_knot_probability": 0.8,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    },
+    {
+      "pdb_id": "4GW9",
+      "chain_id": "A",
+      "description": "Ralstonia solanacearum KARI 4_1 Knot (628 AA)",
+      "sequence_length": 628,
+      "num_windows": 3,
+      "num_seams": 2,
+      "max_seam_rmsd_angstroms": 4.787383046749895e-14,
+      "mean_seam_rmsd_angstroms": 4.302492019904763e-14,
+      "seam_rmsds": [
+        3.8176009930596314e-14,
+        4.787383046749895e-14
+      ],
+      "ground_truth_topology": "Figure-Eight (4_1)",
+      "tiled_topology": "Figure-Eight (4_1)",
+      "topology_preserved": true,
+      "gt_knot_probability": 0.9,
+      "tiled_knot_probability": 0.86,
+      "gt_chain_breaks": 0,
+      "tiled_chain_breaks": 0
+    }
+  ]
+}

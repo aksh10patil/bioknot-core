@@ -1,219 +1,259 @@
-use std::f64::consts::PI;
+use bioknot_wasm::{analyze_protein_knot_native, Point3D};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Point3D {
-    x: f64,
-    y: f64,
-    z: f64,
+#[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
+struct Fixture {
+    pdb_id: String,
+    chain_id: String,
+    ground_truth: String,
+    length: usize,
+    ca_coords: Vec<Point3D>,
 }
 
-impl Point3D {
-    fn sub(&self, other: &Point3D) -> Point3D {
-        Point3D { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z }
-    }
-    fn add(&self, other: &Point3D) -> Point3D {
-        Point3D { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
-    }
-    fn scale(&self, factor: f64) -> Point3D {
-        Point3D { x: self.x * factor, y: self.y * factor, z: self.z * factor }
-    }
-    fn norm(&self) -> f64 {
-        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
-    }
-    fn normalize(&self) -> Point3D {
-        let n = self.norm();
-        if n == 0.0 { *self } else { self.scale(1.0 / n) }
-    }
+#[derive(Debug, Serialize)]
+struct StructureResult {
+    pdb_id: String,
+    chain_id: String,
+    ground_truth: String,
+    predicted: String,
+    knot_probability: f64,
+    chain_breaks: usize,
+    reduced_nodes: usize,
+    elapsed_ms: f64,
+    match_status: bool,
 }
 
-// Möller–Trumbore Ray-Triangle Segment Intersection
-fn segment_pierces_triangle(s1: Point3D, s2: Point3D, p1: Point3D, p2: Point3D, p3: Point3D) -> bool {
-    let edge1 = p2.sub(&p1);
-    let edge2 = p3.sub(&p1);
-    let ray_dir = s2.sub(&s1);
-
-    let pvec = Point3D {
-        x: ray_dir.y * edge2.z - ray_dir.z * edge2.y,
-        y: ray_dir.z * edge2.x - ray_dir.x * edge2.z,
-        z: ray_dir.x * edge2.y - ray_dir.y * edge2.x,
-    };
-
-    let det = edge1.x * pvec.x + edge1.y * pvec.y + edge1.z * pvec.z;
-    if det.abs() < 1e-7 { return false; }
-
-    let inv_det = 1.0 / det;
-    let tvec = s1.sub(&p1);
-    let u = (tvec.x * pvec.x + tvec.y * pvec.y + tvec.z * pvec.z) * inv_det;
-    if u < 0.001 || u > 0.999 { return false; }
-
-    let qvec = Point3D {
-        x: tvec.y * edge1.z - tvec.z * edge1.y,
-        y: tvec.z * edge1.x - tvec.x * edge1.z,
-        z: tvec.x * edge1.y - tvec.y * edge1.x,
-    };
-
-    let v = (ray_dir.x * qvec.x + ray_dir.y * qvec.y + ray_dir.z * qvec.z) * inv_det;
-    if v < 0.001 || (u + v) > 0.999 { return false; }
-
-    let t = (edge2.x * qvec.x + edge2.y * qvec.y + edge2.z * qvec.z) * inv_det;
-    t > 0.001 && t < 0.999
+#[derive(Debug, Serialize)]
+struct ClassStats {
+    tested: usize,
+    correct: usize,
+    accuracy: f64,
 }
 
-fn segments_cross_2d(p1: (f64, f64), p2: (f64, f64), q1: (f64, f64), q2: (f64, f64)) -> bool {
-    let det = (p2.0 - p1.0) * (q2.1 - q1.1) - (p2.1 - p1.1) * (q2.0 - q1.0);
-    if det.abs() < 1e-9 { return false; }
-
-    let t = ((q1.0 - p1.0) * (q2.1 - q1.1) - (q1.1 - p1.1) * (q2.0 - q1.0)) / det;
-    let u = ((q1.0 - p1.0) * (p2.1 - p1.1) - (q1.1 - p1.1) * (p2.0 - p1.0)) / det;
-
-    t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999
+#[derive(Debug, Serialize)]
+struct ChainBreakStats {
+    structures_with_breaks: usize,
+    total_breaks: usize,
 }
 
-fn closed_kmt_reduce(points: &[Point3D], dir: Point3D) -> Vec<Point3D> {
-    if points.len() <= 4 { return points.to_vec(); }
-
-    let com = Point3D {
-        x: points.iter().map(|p| p.x).sum::<f64>() / points.len() as f64,
-        y: points.iter().map(|p| p.y).sum::<f64>() / points.len() as f64,
-        z: points.iter().map(|p| p.z).sum::<f64>() / points.len() as f64,
-    };
-
-    let max_r = points.iter().map(|p| p.sub(&com).norm()).fold(0.0, f64::max) * 5.0;
-
-    let n_ext = points[0].add(&dir.scale(max_r));
-    let c_ext = points[points.len() - 1].add(&dir.scale(-max_r));
-
-    let mut loop_pts = vec![c_ext];
-    loop_pts.extend_from_slice(points);
-    loop_pts.push(n_ext);
-
-    let mut modified = true;
-    while modified && loop_pts.len() > 5 {
-        modified = false;
-        let mut i = 1;
-        while i < loop_pts.len() - 2 {
-            let p_prev = loop_pts[i - 1];
-            let p_curr = loop_pts[i];
-            let p_next = loop_pts[i + 1];
-
-            let mut pierced = false;
-            for j in 0..(loop_pts.len() - 1) {
-                if j == i - 1 || j == i { continue; }
-                if segment_pierces_triangle(loop_pts[j], loop_pts[j + 1], p_prev, p_curr, p_next) {
-                    pierced = true;
-                    break;
-                }
-            }
-
-            if !pierced {
-                loop_pts.remove(i);
-                modified = true;
-                break;
-            }
-            i += 1;
-        }
-    }
-    loop_pts
+#[derive(Debug, Serialize)]
+struct BenchmarkReport {
+    total_tested: usize,
+    exact_matches: usize,
+    exact_match_rate: f64,
+    unknot_false_positives: usize,
+    unknot_false_positive_rate: f64,
+    per_class_accuracy: HashMap<String, ClassStats>,
+    chain_break_stats: ChainBreakStats,
+    total_time_seconds: f64,
+    throughput_structures_per_second: f64,
+    results: Vec<StructureResult>,
 }
 
-fn stochastically_classify_knot(points: &[Point3D]) -> (f64, String) {
-    let num_projections = 50;
-    let mut trefoil_votes = 0;
-    let mut unknot_votes = 0;
+fn find_fixtures_dir() -> PathBuf {
+    let candidates = [
+        PathBuf::from("eval/pdb_fixtures"),
+        PathBuf::from("../eval/pdb_fixtures"),
+        PathBuf::from("../../eval/pdb_fixtures"),
+    ];
 
-    for k in 0..num_projections {
-        let phi = PI * (1.0 + (5.0f64).sqrt()) * (k as f64);
-        let y = 1.0 - (k as f64 / (num_projections - 1) as f64) * 2.0;
-        let radius = (1.0 - y * y).sqrt();
-        let x = phi.cos() * radius;
-        let z = phi.sin() * radius;
-        let dir = Point3D { x, y, z };
-
-        let closed_reduced = closed_kmt_reduce(points, dir);
-
-        let ez = dir.normalize();
-        let ex = if ez.x.abs() < 0.9 {
-            Point3D { x: 0.0, y: ez.z, z: -ez.y }.normalize()
-        } else {
-            Point3D { x: -ez.z, y: 0.0, z: ez.x }.normalize()
-        };
-        let ey = Point3D {
-            x: ez.y * ex.z - ez.z * ex.y,
-            y: ez.z * ex.x - ez.x * ex.z,
-            z: ez.x * ex.y - ez.y * ex.x,
-        };
-
-        let proj: Vec<(f64, f64)> = closed_reduced.iter().map(|p| {
-            let px = p.x * ex.x + p.y * ex.y + p.z * ex.z;
-            let py = p.x * ey.x + p.y * ey.y + p.z * ey.z;
-            (px, py)
-        }).collect();
-
-        let n = proj.len() - 1;
-        let mut crossings = 0;
-
-        for i in 0..n {
-            let p1 = proj[i];
-            let p2 = proj[i+1];
-            for j in (i + 2)..n {
-                if i == 0 && j == n - 1 { continue; }
-                let q1 = proj[j];
-                let q2 = proj[j+1];
-
-                if segments_cross_2d(p1, p2, q1, q2) {
-                    crossings += 1;
-                }
-            }
-        }
-
-        if crossings >= 3 {
-            trefoil_votes += 1;
-        } else {
-            unknot_votes += 1;
+    for candidate in &candidates {
+        if candidate.exists() && candidate.is_dir() {
+            return candidate.clone();
         }
     }
 
-    let knot_probability = trefoil_votes as f64 / (trefoil_votes + unknot_votes) as f64;
-    // Open-chain virtual closures detect topological knotting if > 15% of random projections retain crossings
-    if knot_probability > 0.15 {
-        (knot_probability, "Trefoil Knot (3_1)".to_string())
-    } else {
-        (knot_probability, "Unknot (0_1)".to_string())
+    panic!("Could not find eval/pdb_fixtures directory. Please run eval/fetch_pdb_fixtures.py first.");
+}
+
+fn load_fixtures(fixtures_dir: &Path) -> Vec<Fixture> {
+    let manifest_path = fixtures_dir.join("manifest.json");
+    if manifest_path.exists() {
+        let content = fs::read_to_string(&manifest_path).expect("Failed to read manifest.json");
+        if let Ok(fixtures) = serde_json::from_str::<Vec<Fixture>>(&content) {
+            return fixtures;
+        }
     }
+
+    let mut fixtures = Vec::new();
+    let entries = fs::read_dir(fixtures_dir).expect("Failed to read fixtures dir");
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            if path.file_name().and_then(|s| s.to_str()) == Some("manifest.json") {
+                continue;
+            }
+            let content = fs::read_to_string(&path).expect("Failed to read fixture file");
+            if let Ok(fixture) = serde_json::from_str::<Fixture>(&content) {
+                fixtures.push(fixture);
+            }
+        }
+    }
+    fixtures
 }
 
 fn main() {
-    println!("====================================================");
-    println!("  BIOKNOT-CORE: CLOSED KMT TOPOLOGY VERIFICATION SUITE");
-    println!("====================================================");
+    println!("==========================================================================================");
+    println!("   BIOKNOT-CORE: REAL PDB GROUND-TRUTH TOPOLOGICAL BENCHMARK (ALEXANDER INVARIANT)        ");
+    println!("==========================================================================================");
 
-    // Benchmark 1: Ubiquitin Trace (76 residues - Unknotted Baseline)
-    let ubi_trace: Vec<Point3D> = (0..76).map(|i| Point3D {
-        x: (i as f64) * 1.2,
-        y: ((i as f64) * 0.3).sin() * 5.0,
-        z: ((i as f64) * 0.3).cos() * 5.0,
-    }).collect();
+    let fixtures_dir = find_fixtures_dir();
+    let fixtures = load_fixtures(&fixtures_dir);
+    println!("Loaded {} fixtures from {}\n", fixtures.len(), fixtures_dir.display());
 
-    let (prob_ubi, type_ubi) = stochastically_classify_knot(&ubi_trace);
-    println!("\n[Test 1] Ubiquitin (Unknot Standard)");
-    println!("  Raw C-alpha Count  : {}", ubi_trace.len());
-    println!("  Knot Probability   : {:.2}%", prob_ubi * 100.0);
-    println!("  Topology Verdict   : {}", if type_ubi.contains("Unknot") { "PASS (Unknot 0_1)" } else { "FAIL (False Positive)" });
+    let mut exact_matches = 0;
+    let mut total_structures = 0;
+    let mut unknot_total = 0;
+    let mut unknot_false_positives = 0;
+    let mut structures_with_breaks = 0;
+    let mut total_breaks = 0;
 
-    // Benchmark 2: Idealized Trefoil Knot Curve (120 nodes - Knotted 3_1 Standard)
-    let trefoil_trace: Vec<Point3D> = (0..120).map(|t| {
-        let theta = (t as f64) * (2.0 * PI / 120.0);
-        Point3D {
-            x: (theta.sin() + 2.0 * (2.0 * theta).sin()) * 10.0,
-            y: (theta.cos() - 2.0 * (2.0 * theta).cos()) * 10.0,
-            z: (-(3.0 * theta).sin()) * 10.0,
+    let mut class_tested: HashMap<String, usize> = HashMap::new();
+    let mut class_correct: HashMap<String, usize> = HashMap::new();
+    let mut detailed_results: Vec<StructureResult> = Vec::new();
+
+    let start_all = Instant::now();
+
+    println!("{:<6} {:<6} {:<20} {:<20} {:<8} {:<8} {:<8} {:<10} {:<6}",
+        "PDB", "Chain", "Ground Truth", "Predicted", "Prob", "Breaks", "Nodes", "Time (ms)", "Status");
+    println!("{:-<100}", "");
+
+    for fixture in &fixtures {
+        let t0 = Instant::now();
+        let result = analyze_protein_knot_native(&fixture.ca_coords);
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let is_match = result.knot_type == fixture.ground_truth;
+        if is_match {
+            exact_matches += 1;
+            *class_correct.entry(fixture.ground_truth.clone()).or_insert(0) += 1;
         }
-    }).collect();
+        *class_tested.entry(fixture.ground_truth.clone()).or_insert(0) += 1;
 
-    let (prob_t, type_t) = stochastically_classify_knot(&trefoil_trace);
-    println!("\n[Test 2] Synthetic Trefoil (Knotted 3_1 Standard)");
-    println!("  Raw C-alpha Count  : {}", trefoil_trace.len());
-    println!("  Knot Probability   : {:.2}%", prob_t * 100.0);
-    println!("  Topology Verdict   : {}", if type_t.contains("Trefoil") { "PASS (Trefoil 3_1 Preserved)" } else { "FAIL (Collapsed)" });
-    println!("====================================================\n");
+        let is_ground_truth_unknot = fixture.ground_truth.contains("Unknot");
+        if is_ground_truth_unknot {
+            unknot_total += 1;
+            if result.is_knotted {
+                unknot_false_positives += 1;
+            }
+        }
+
+        if result.chain_breaks > 0 {
+            structures_with_breaks += 1;
+            total_breaks += result.chain_breaks;
+        }
+
+        total_structures += 1;
+        let status_str = if is_match { "PASS" } else { "FAIL" };
+
+        println!("{:<6} {:<6} {:<20} {:<20} {:<7.1}% {:<8} {:<8} {:<9.2} {:<6}",
+            fixture.pdb_id,
+            fixture.chain_id,
+            fixture.ground_truth,
+            result.knot_type,
+            result.knot_probability * 100.0,
+            result.chain_breaks,
+            result.reduced_node_count,
+            elapsed_ms,
+            status_str,
+        );
+
+        detailed_results.push(StructureResult {
+            pdb_id: fixture.pdb_id.clone(),
+            chain_id: fixture.chain_id.clone(),
+            ground_truth: fixture.ground_truth.clone(),
+            predicted: result.knot_type,
+            knot_probability: result.knot_probability,
+            chain_breaks: result.chain_breaks,
+            reduced_nodes: result.reduced_node_count,
+            elapsed_ms,
+            match_status: is_match,
+        });
+    }
+
+    let total_time_sec = start_all.elapsed().as_secs_f64();
+    let throughput = if total_time_sec > 0.0 {
+        total_structures as f64 / total_time_sec
+    } else {
+        0.0
+    };
+
+    let match_rate = if total_structures > 0 {
+        (exact_matches as f64 / total_structures as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let fp_rate = if unknot_total > 0 {
+        (unknot_false_positives as f64 / unknot_total as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let mut per_class_accuracy: HashMap<String, ClassStats> = HashMap::new();
+    for (c_name, tested_count) in &class_tested {
+        let correct_count = class_correct.get(c_name).copied().unwrap_or(0);
+        let acc = (correct_count as f64 / *tested_count as f64) * 100.0;
+        per_class_accuracy.insert(
+            c_name.clone(),
+            ClassStats {
+                tested: *tested_count,
+                correct: correct_count,
+                accuracy: acc,
+            },
+        );
+    }
+
+    println!("{:-<100}", "");
+    println!("BENCHMARK SUMMARY:");
+    println!("  Total Structures Evaluated : {}", total_structures);
+    println!("  Exact Topology Matches     : {} / {}", exact_matches, total_structures);
+    println!("  Exact Match Rate           : {:.2}%", match_rate);
+    println!("  Unknot False Positive Rate : {:.2}% ({} / {})", fp_rate, unknot_false_positives, unknot_total);
+    println!("  Structures w/ Chain Breaks : {} (Total breaks: {})", structures_with_breaks, total_breaks);
+    println!("  Total Benchmark Time       : {:.3}s", total_time_sec);
+    println!("  Throughput                 : {:.2} structures/sec", throughput);
+    println!("==========================================================================================");
+
+    // Export to eval/rust_benchmark.json
+    let report = BenchmarkReport {
+        total_tested: total_structures,
+        exact_matches,
+        exact_match_rate: match_rate,
+        unknot_false_positives,
+        unknot_false_positive_rate: fp_rate,
+        per_class_accuracy,
+        chain_break_stats: ChainBreakStats {
+            structures_with_breaks,
+            total_breaks,
+        },
+        total_time_seconds: total_time_sec,
+        throughput_structures_per_second: throughput,
+        results: detailed_results,
+    };
+
+    let report_json = serde_json::to_string_pretty(&report).expect("Failed to serialize benchmark report");
+    let out_paths = [
+        fixtures_dir.parent().unwrap().join("rust_benchmark.json"),
+        PathBuf::from("eval/rust_benchmark.json"),
+    ];
+
+    for path in &out_paths {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(_) = fs::write(path, &report_json) {
+            println!("Exported benchmark report to {}", path.display());
+            break;
+        }
+    }
+
+    assert!(match_rate >= 90.0, "Benchmark failed: exact match rate {:.2}% < 90.0%", match_rate);
+    assert_eq!(unknot_false_positives, 0, "Benchmark failed: unknot false positive rate must be 0%");
+    println!("All verification criteria met successfully!");
 }

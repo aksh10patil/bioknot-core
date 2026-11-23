@@ -5,7 +5,10 @@ Two engines behind one Flask app:
   POST /predict_custom  Fine-tuned ESM-2 sequence classifier -> knot topology
 """
 
+import json
 import os
+import shutil
+import subprocess
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -17,6 +20,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from app.model import (
     CLASS_MAP,
+    MAX_RESIDUES,
     MAX_TOKENS,
     load_classifier,
     load_tokenizer,
@@ -24,6 +28,14 @@ from app.model import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+AA1_TO_AA3 = {
+    "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
+    "E": "GLU", "Q": "GLN", "G": "GLY", "H": "HIS", "I": "ILE",
+    "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
+    "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL",
+}
 
 
 def _int_env(name, default):
@@ -161,6 +173,7 @@ def fetch_pdb_for_chunk(seq_chunk, deadline=None):
 
 def extract_ca_coords(pdb_str):
     coords = []
+    plddts = []
     for line in pdb_str.splitlines():
         if line.startswith("ATOM") and line[12:16].strip() == "CA":
             try:
@@ -171,9 +184,10 @@ def extract_ca_coords(pdb_str):
                         float(line[46:54].strip()),
                     ]
                 )
+                plddts.append(float(line[60:66].strip()))
             except ValueError:
                 continue
-    return np.array(coords)
+    return np.array(coords), np.array(plddts)
 
 
 def kabsch_rotation(target_overlap, ref_overlap):
@@ -195,41 +209,38 @@ def kabsch_rotation(target_overlap, ref_overlap):
 def tile_long_sequence(sequence, deadline):
     """Fold a >400 AA sequence as overlapping windows stitched by rigid Kabsch fits.
 
-    Returns `(coords, truncated)`. `full_chain` is kept index-aligned with the
-    residue numbering: index i is residue i. If a window fails or the overlap is
-    too short to fit, alignment can no longer be guaranteed, so we stop and
-    report a truncated chain rather than emitting misaligned geometry.
+    Returns `(coords, plddts, truncated, seam_rmsds)`. Splices at the midpoint of
+    the overlap (`mid = n // 2`), keeping `full_chain` index-aligned with residue numbering.
     """
     seq_len = len(sequence)
     overlap = WINDOW_SIZE - STRIDE
+    seam_rmsds = []
 
     pdb1 = fetch_pdb_for_chunk(sequence[0:WINDOW_SIZE], deadline)
     if pdb1 is None:
-        return None, False
+        return None, None, False, seam_rmsds
 
-    full_chain = extract_ca_coords(pdb1)
+    full_chain, full_plddts = extract_ca_coords(pdb1)
 
     for start in range(STRIDE, seq_len, STRIDE):
         if time.time() >= deadline:
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
         end = min(start + WINDOW_SIZE, seq_len)
         if end - start < 5:
             break
 
-        # A short chain means an earlier window came back incomplete; without a
-        # valid reference span we cannot place this window.
         if start >= len(full_chain):
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
         pdb_next = fetch_pdb_for_chunk(sequence[start:end], deadline)
         if pdb_next is None:
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
-        w_coords = extract_ca_coords(pdb_next)
+        w_coords, w_plddts = extract_ca_coords(pdb_next)
         curr_overlap_len = min(overlap, len(full_chain) - start, len(w_coords))
         if curr_overlap_len < 5:
-            return full_chain, True
+            return full_chain, full_plddts, True, seam_rmsds
 
         ref_overlap = full_chain[start : start + curr_overlap_len]
         target_overlap = w_coords[:curr_overlap_len]
@@ -237,12 +248,82 @@ def tile_long_sequence(sequence, deadline):
         R, centroid_target, centroid_ref = kabsch_rotation(target_overlap, ref_overlap)
         aligned = np.dot(w_coords - centroid_target, R.T) + centroid_ref
 
-        full_chain = np.vstack([full_chain[:start + curr_overlap_len], aligned[curr_overlap_len:]])
+        seam_rmsd = float(np.sqrt(np.mean(np.sum((aligned[:curr_overlap_len] - ref_overlap) ** 2, axis=1))))
+        seam_rmsds.append(seam_rmsd)
+
+        # Splice at the midpoint of the overlap
+        mid = curr_overlap_len // 2
+        full_chain = np.vstack([full_chain[:start + mid], aligned[mid:]])
+        full_plddts = np.concatenate([full_plddts[:start + mid], w_plddts[mid:]])
 
         if end == seq_len:
             break
 
-    return full_chain, False
+    return full_chain, full_plddts, False, seam_rmsds
+
+
+def get_cli_path():
+    env_cli = os.environ.get("BIOKNOT_CLI_PATH")
+    if env_cli and os.path.isfile(env_cli) and os.access(env_cli, os.X_OK):
+        return env_cli
+    which_cli = shutil.which("bioknot_cli")
+    if which_cli:
+        return which_cli
+    repo_root = os.path.abspath(os.path.join(APP_DIR, ".."))
+    local_release = os.path.join(repo_root, "rust", "target", "release", "bioknot_cli")
+    if os.path.isfile(local_release) and os.access(local_release, os.X_OK):
+        return local_release
+    usr_bin = "/usr/local/bin/bioknot_cli"
+    if os.path.isfile(usr_bin) and os.access(usr_bin, os.X_OK):
+        return usr_bin
+    return None
+
+
+def verify_topology_3d(ca_coords):
+    """Pipe C-alpha coordinates JSON to the Rust bioknot_cli invariant verifier."""
+    cli_path = get_cli_path()
+    if not cli_path:
+        return {
+            "error": "Rust bioknot_cli verifier binary not found.",
+            "knot_type": "Unknown",
+            "knot_probability": 0.0,
+            "raw_node_count": len(ca_coords),
+            "reduced_node_count": len(ca_coords),
+            "chain_breaks": 0,
+            "is_knotted": False,
+        }
+    try:
+        input_data = json.dumps([{"x": c["x"], "y": c["y"], "z": c["z"]} for c in ca_coords])
+        proc = subprocess.run(
+            [cli_path],
+            input=input_data,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode == 0:
+            return json.loads(proc.stdout)
+        print(f"[Rust Verifier] CLI exited with code {proc.returncode}: {proc.stderr}")
+        return {
+            "error": f"CLI error: {proc.stderr.strip()}",
+            "knot_type": "Unknown",
+            "knot_probability": 0.0,
+            "raw_node_count": len(ca_coords),
+            "reduced_node_count": len(ca_coords),
+            "chain_breaks": 0,
+            "is_knotted": False,
+        }
+    except Exception as e:
+        print(f"[Rust Verifier] Execution failed: {e}")
+        return {
+            "error": str(e),
+            "knot_type": "Unknown",
+            "knot_probability": 0.0,
+            "raw_node_count": len(ca_coords),
+            "reduced_node_count": len(ca_coords),
+            "chain_breaks": 0,
+            "is_knotted": False,
+        }
 
 
 # --- Routes ------------------------------------------------------------------
@@ -277,22 +358,38 @@ def predict_structure():
     print(f"\n[ESMFold Bridge] Request for sequence length: {seq_len} AA")
 
     truncated = False
+    seam_rmsds = []
     if seq_len <= 400:
         pdb_str = fetch_pdb_for_chunk(sequence, deadline)
         if pdb_str is None:
             return jsonify({"error": "ESMFold API timed out or rate-limited. Retry request."}), 502
-        coords_arr = extract_ca_coords(pdb_str)
+        coords_arr, plddts_arr = extract_ca_coords(pdb_str)
     else:
         print("[ESMFold Bridge] Sequence > 400 AA. Executing rigid Kabsch domain tiling...")
-        coords_arr, truncated = tile_long_sequence(sequence, deadline)
+        coords_arr, plddts_arr, truncated, seam_rmsds = tile_long_sequence(sequence, deadline)
         if coords_arr is None:
             return jsonify({"error": "ESMFold API failed on the initial window."}), 502
 
     if coords_arr is None or len(coords_arr) == 0:
         return jsonify({"error": "No C-alpha atoms could be extracted from the folded structure."}), 502
 
-    ca_coords = [{"x": float(p[0]), "y": float(p[1]), "z": float(p[2])} for p in coords_arr]
+    ca_coords = [
+        {
+            "x": float(p[0]),
+            "y": float(p[1]),
+            "z": float(p[2]),
+            "res_name": AA1_TO_AA3.get(sequence[i].upper(), "UNK") if i < len(sequence) else "UNK",
+            "plddt": float(plddts_arr[i]) if (plddts_arr is not None and i < len(plddts_arr)) else 0.0,
+            "res_num": i + 1,
+        }
+        for i, p in enumerate(coords_arr)
+    ]
     print(f"[ESMFold Bridge] Extracted {len(ca_coords)} continuous C-alpha nodes.")
+
+    max_seam_rmsd = float(np.max(seam_rmsds)) if seam_rmsds else 0.0
+
+    print("[Rust Verifier] Verifying 3D backbone topology with Alexander polynomial invariant...")
+    topology = verify_topology_3d(ca_coords)
 
     return jsonify(
         {
@@ -300,6 +397,9 @@ def predict_structure():
             "sequence_length": seq_len,
             "residues_resolved": len(ca_coords),
             "truncated": truncated,
+            "max_seam_rmsd": max_seam_rmsd,
+            "seam_rmsds": seam_rmsds,
+            "topology": topology,
             "ca_coords": ca_coords,
         }
     )
@@ -326,9 +426,9 @@ def predict_custom():
         return error
 
     original_len = len(sequence)
-    evaluated = sequence[:MAX_TOKENS]
-    if original_len > MAX_TOKENS:
-        print(f"[Custom AI Engine] Truncating {original_len} AA to {MAX_TOKENS} AA model capacity.")
+    evaluated = sequence[:MAX_RESIDUES]
+    if original_len > MAX_RESIDUES:
+        print(f"[Custom AI Engine] Truncating {original_len} AA to {MAX_RESIDUES} AA model capacity.")
 
     print(f"\n[Custom AI Engine] Running direct sequence inference ({len(evaluated)} AA)...")
 

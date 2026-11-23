@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.model import (  # noqa: E402
     CLASS_MAP,
+    MAX_RESIDUES,
     MAX_TOKENS,
     load_classifier,
     load_tokenizer,
@@ -48,7 +49,8 @@ def main():
             "Build one first:  python -m training.train"
         )
 
-    inputs = tokenizer(sequence[:MAX_TOKENS], return_tensors="pt", truncation=True, max_length=MAX_TOKENS)
+    evaluated = sequence[:MAX_RESIDUES]
+    inputs = tokenizer(evaluated, return_tensors="pt", truncation=True, max_length=MAX_TOKENS)
     with torch.no_grad():
         logits = model(inputs["input_ids"], inputs["attention_mask"])
         probs = torch.softmax(logits, dim=-1).squeeze(0).numpy()
