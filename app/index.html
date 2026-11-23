@@ -60,8 +60,18 @@
     <script>
         let viewer = null;
 
+        function parseFastaSequence(raw) {
+            if (!raw) return '';
+            return raw
+                .split(/\r?\n/)
+                .filter(line => !line.trim().startsWith('>'))
+                .join('')
+                .replace(/\s+/g, '')
+                .toUpperCase();
+        }
+
         async function analyzeTopology() {
-            const seq = document.getElementById('seqInput').value.replace(/[\r\n\s]/g, '');
+            const seq = parseFastaSequence(document.getElementById('seqInput').value);
             if (!seq) { alert('Please enter a valid amino acid sequence.'); return; }
 
             const resDiv = document.getElementById('results');
@@ -90,12 +100,12 @@
 
                 const isUnknot = data.predicted_knot && data.predicted_knot.includes('Unknot');
                 const badgeClass = isUnknot ? 'unknot' : 'knot';
+                window.lastCustomPrediction = { sequence: seq, knot: data.predicted_knot, confidence: data.confidence };
 
                 knotOut.innerHTML = `
                     ${data.warning ? `<div style="color:#fbbf24; margin-bottom:8px;">${data.warning}</div>` : ''}
                     <div><strong>Evaluated Length:</strong> ${data.evaluated_length} AA (Total: ${data.sequence_length} AA)</div>
-                    <div><strong>Predicted Topology:</strong> <span class="knot-badge ${badgeClass}">${data.predicted_knot}</span></div>
-                    <div><strong>Confidence:</strong> ${(data.confidence * 100).toFixed(2)}%</div>
+                    <div><strong>Path A (ESM-2 Pre-Screener):</strong> <span class="knot-badge ${badgeClass}">${data.predicted_knot}</span> (${(data.confidence * 100).toFixed(2)}%)</div>
                 `;
                 jsonOut.textContent = JSON.stringify(data, null, 2);
             } catch (err) {
@@ -104,7 +114,7 @@
         }
 
         async function scanSubDomains() {
-            const seq = document.getElementById('seqInput').value.replace(/[\r\n\s]/g, '');
+            const seq = parseFastaSequence(document.getElementById('seqInput').value);
             if (!seq) { alert('Please enter a valid amino acid sequence.'); return; }
 
             const resDiv = document.getElementById('results');
@@ -162,7 +172,7 @@
         }
 
         async function predict3D() {
-            const seq = document.getElementById('seqInput').value.replace(/[\r\n\s]/g, '');
+            const seq = parseFastaSequence(document.getElementById('seqInput').value);
             if (!seq) { alert('Please enter a valid amino acid sequence.'); return; }
 
             const resDiv = document.getElementById('results');
@@ -190,9 +200,21 @@
                     return;
                 }
 
+                let concordHtml = '';
+                if (window.lastCustomPrediction && window.lastCustomPrediction.sequence === seq && data.topology) {
+                    const pathA = window.lastCustomPrediction.knot;
+                    const pathB = data.topology.knot_type;
+                    const agree = (pathA === pathB);
+                    concordHtml = `<div><strong>Engine Concordance:</strong> ${agree ? `<span style="color:#4ade80;">AGREEMENT (Path A: ${pathA} ⟷ Path B: ${pathB})</span>` : `<span style="color:#fbbf24;">DISCORDANCE (Path A: ${pathA} ≠ Path B: ${pathB})</span>`}</div>`;
+                }
+
+                const topoBadge = data.topology && data.topology.is_knotted ? 'knot' : 'unknot';
                 knotOut.innerHTML = `
                     <div><strong>3D Engine:</strong> ${data.engine}</div>
                     <div><strong>C-Alpha Backbone Nodes Extracted:</strong> ${data.ca_coords.length}</div>
+                    ${data.max_seam_rmsd !== undefined && data.seam_rmsds && data.seam_rmsds.length > 0 ? (data.max_seam_rmsd > 3.0 ? `<div style="color:#fbbf24;">⚠️ Max Seam RMSD: ${data.max_seam_rmsd.toFixed(2)} Å (high seam strain detected)</div>` : `<div><strong>Max Seam RMSD:</strong> ${data.max_seam_rmsd.toFixed(2)} Å</div>`) : ''}
+                    ${data.topology ? `<div><strong>Path B (Rust Alexander Invariant):</strong> <span class="knot-badge ${topoBadge}">${data.topology.knot_type}</span> (reduced nodes: ${data.topology.reduced_node_count}, chain breaks: ${data.topology.chain_breaks})</div>` : ''}
+                    ${concordHtml}
                     ${data.truncated ? '<div style="color:#fbbf24;">Partial result: the fold exceeded the time budget or an upstream window failed, so the chain stops early.</div>' : ''}
                 `;
                 jsonOut.textContent = JSON.stringify(data, null, 2);
@@ -200,12 +222,13 @@
                 let pdbStr = '';
                 data.ca_coords.forEach((c, i) => {
                     const idx = (i + 1).toString().padStart(5, ' ');
-                    const resName = 'ALA';
+                    const resName = (c.res_name || 'UNK').padEnd(3, ' ').substring(0, 3);
                     const resIdx = (i + 1).toString().padStart(4, ' ');
                     const x = c.x.toFixed(3).padStart(8, ' ');
                     const y = c.y.toFixed(3).padStart(8, ' ');
                     const z = c.z.toFixed(3).padStart(8, ' ');
-                    pdbStr += `ATOM  ${idx}  CA  ${resName} A${resIdx}    ${x}${y}${z}  1.00 20.00           C  \n`;
+                    const bFactor = (typeof c.plddt === 'number' ? c.plddt : 0.0).toFixed(2).padStart(6, ' ');
+                    pdbStr += `ATOM  ${idx}  CA  ${resName} A${resIdx}    ${x}${y}${z}  1.00${bFactor}           C  \n`;
                 });
                 pdbStr += 'END\n';
 

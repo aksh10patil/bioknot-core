@@ -20,6 +20,16 @@ interface DomainResult {
   pdbData: string;
 }
 
+function parseFastaSequence(raw: string): string {
+  if (!raw) return '';
+  return raw
+    .split(/\r?\n/)
+    .filter(line => !line.trim().startsWith('>'))
+    .join('')
+    .replace(/[^a-zA-Z]/g, '')
+    .toUpperCase();
+}
+
 export default function BioKnotDashboard() {
   const viewerRef = useRef<HTMLDivElement>(null);
   const [wasmReady, setWasmReady] = useState(false);
@@ -124,7 +134,7 @@ export default function BioKnotDashboard() {
   };
 
   const handlePredict3DAndAnalyze = async () => {
-    const cleanSeq = fastaSeq.replace(/[^A-Z]/gi, '').toUpperCase();
+    const cleanSeq = parseFastaSequence(fastaSeq);
     if (!cleanSeq) {
       setErrorMessage("Please enter a valid FASTA amino acid sequence.");
       return;
@@ -232,7 +242,7 @@ export default function BioKnotDashboard() {
               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm font-mono text-emerald-400 focus:outline-none focus:border-emerald-500"
             />
             <div className="text-xs text-slate-500 mt-1 flex justify-between">
-              <span>Sequence Length: {fastaSeq.replace(/[^A-Z]/gi, '').length} AA</span>
+              <span>Sequence Length: {parseFastaSequence(fastaSeq).length} AA</span>
               <span>Long sequence (&gt;400 AA) auto-segmentation enabled</span>
             </div>
           </div>

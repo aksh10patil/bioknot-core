@@ -12,6 +12,7 @@ __pycache__/
 
 # Rust
 target/
+bioknot_cli
 
 # Node / Next.js
 node_modules/

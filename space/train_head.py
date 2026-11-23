@@ -63,8 +63,26 @@ def train(output_path, epochs=30, batch_size=2, lr=1e-3, seed=42):
     dataset = _KnotDataset(DATASET_PATH)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=_collate(tokenizer))
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    counts = {}
+    for _, label in dataset:
+        counts[label] = counts.get(label, 0) + 1
+
+    total_samples = len(dataset)
+    class_weights = torch.zeros(NUM_CLASSES, dtype=torch.float)
+    for c in range(NUM_CLASSES):
+        count = counts.get(c, 0)
+        class_weights[c] = (total_samples / (NUM_CLASSES * count)) if count > 0 else 1.0
+
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    esm_params = [p for p in model.esm.parameters() if p.requires_grad]
+    head_params = list(model.conv1.parameters()) + list(model.fc.parameters())
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": esm_params, "lr": 2e-5, "weight_decay": 0.01},
+            {"params": head_params, "lr": 5e-4, "weight_decay": 0.01},
+        ]
+    )
 
     model.train()
     for epoch in range(1, epochs + 1):

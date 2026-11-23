@@ -33,6 +33,23 @@ PY
 cp data/bioknot_dataset.json space/data/bioknot_dataset.json
 echo "synced space/data/bioknot_dataset.json"
 
+if [ -f "bioknot_native.pt" ]; then
+    cp bioknot_native.pt space/bioknot_native.pt
+    echo "synced space/bioknot_native.pt (pre-built classifier artifact)"
+fi
+
+if [ -f "Dockerfile" ]; then
+    cp Dockerfile space/Dockerfile
+    echo "synced space/Dockerfile (multi-stage Rust + Python container spec)"
+fi
+
+CLI_BIN="rust/target/release/bioknot_cli"
+if [ -f "$CLI_BIN" ]; then
+    cp "$CLI_BIN" space/bioknot_cli
+    chmod +x space/bioknot_cli
+    echo "synced space/bioknot_cli binary"
+fi
+
 if [ "${1:-}" = "--upload" ]; then
     echo "uploading to ${SPACE_ID}..."
     # Patterns are fnmatch-based with '*' matching recursively, so "*__pycache__*"
