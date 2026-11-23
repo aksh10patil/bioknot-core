@@ -3,10 +3,13 @@ title: BioKnot-Core
 emoji: 🧬
 colorFrom: blue
 colorTo: indigo
-sdk: docker
-app_port: 7860
+sdk: gradio
+sdk_version: 6.22.0
+app_file: app.py
+short_description: Protein knot topology detection with ESMFold 3D bridge
+python_version: "3.12"
+startup_duration_timeout: 30m
 pinned: false
-short_description: Topological protein knot detection with an ESMFold 3D bridge and Rust Alexander invariant
 ---
 
 # 🧬 BioKnot-Core
